@@ -203,25 +203,29 @@ func Fio(ctx context.Context, output, outfile, storageclass, size, namespace str
 	fioRunner := &fio.FIOrunner{
 		Cli: cli,
 	}
-	testName := "FIO test results"
+	testName := fmt.Sprintf("FIO test results at %s", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Println("----------TARALOG FIO test that runs continously:")
 	var result *kubestr.TestOutput
-	fioResult, err := fioRunner.RunFio(ctx, &fio.RunFIOArgs{
-		StorageClass:   storageclass,
-		Size:           size,
-		Namespace:      namespace,
-		NodeSelector:   nodeSelector,
-		FIOJobName:     jobName,
-		FIOJobFilepath: fioFilePath,
-		Image:          containerImage,
-	})
-	if err != nil {
+	for {
+	      fmt.Println("\n\n\n\nHERE")
+	      fioResult, err := fioRunner.RunFio(ctx, &fio.RunFIOArgs{
+			 StorageClass:   storageclass,
+			 Size:           size,
+			 Namespace:      namespace,
+			 NodeSelector:   nodeSelector,
+			 FIOJobName:     jobName,
+			 FIOJobFilepath: fioFilePath,
+			 Image:          containerImage,
+	      })
+	      if err != nil {
 		result = kubestr.MakeTestOutput(testName, kubestr.StatusError, err.Error(), fioResult)
-	} else {
-		result = kubestr.MakeTestOutput(testName, kubestr.StatusOK, fmt.Sprintf("\n%s", fioResult.Result.Print()), fioResult)
-	}
-	var wrappedResult = []*kubestr.TestOutput{result}
-	if !PrintAndJsonOutput(wrappedResult, output, outfile) {
+	      } else {
+	        result = kubestr.MakeTestOutput(testName, kubestr.StatusOK, fmt.Sprintf("\n%s", fioResult.Result.Print()), fioResult)
+	      }
+              var wrappedResult = []*kubestr.TestOutput{result}
+	      if !PrintAndJsonOutput(wrappedResult, output, outfile) {
 		result.Print()
+	      }
 	}
 	return err
 }

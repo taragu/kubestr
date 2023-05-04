@@ -238,6 +238,9 @@ func (s *fioStepper) createPVC(ctx context.Context, storageclass, size, namespac
 	pvc := &v1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: PVCGenerateName,
+			Annotations: map[string]string{
+			    "robin.io/replication": "3",
+			},
 		},
 		Spec: v1.PersistentVolumeClaimSpec{
 			StorageClassName: &storageclass,
