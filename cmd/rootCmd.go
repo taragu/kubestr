@@ -204,9 +204,9 @@ func Fio(ctx context.Context, output, outfile, storageclass, size, namespace str
 		Cli: cli,
 	}
 	testName := fmt.Sprintf("FIO test results at %s", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Println("----------TARALOG FIO test that runs continously:")
+//	fmt.Println("----------TARALOG FIO test that runs continously:")
 	var result *kubestr.TestOutput
-	for {
+//	for {
 	      fmt.Println("\n\n\n\nHERE")
 	      fioResult, err := fioRunner.RunFio(ctx, &fio.RunFIOArgs{
 			 StorageClass:   storageclass,
@@ -226,7 +226,7 @@ func Fio(ctx context.Context, output, outfile, storageclass, size, namespace str
 	      if !PrintAndJsonOutput(wrappedResult, output, outfile) {
 		result.Print()
 	      }
-	}
+//	}
 	return err
 }
 

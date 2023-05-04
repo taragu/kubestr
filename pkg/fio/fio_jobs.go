@@ -3,6 +3,7 @@ package fio
 var fioJobs = map[string]string{
 	DefaultFIOJob: testJob1,
 	"randrw":      randReadWrite,
+	"robin-availability": robinAvailability,
 }
 
 var testJob1 = `[global]
@@ -65,4 +66,23 @@ rwmixread=75
 time_based
 ramp_time=2s
 runtime=15s
+`
+
+// Run for 4 minutes.
+var robinAvailability = `[global]
+randrepeat=0
+verify=0
+ioengine=libaio
+direct=1
+gtod_reduce=1
+[job1]
+name=rand_readwrite
+bs=4K
+iodepth=64
+size=4G
+readwrite=randrw
+rwmixread=75
+time_based
+ramp_time=2s
+runtime=240s
 `
