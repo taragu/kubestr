@@ -3,15 +3,17 @@ package fio
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/briandowns/spinner"
 	kankube "github.com/kanisterio/kanister/pkg/kube"
 	"github.com/kastenhq/kubestr/pkg/common"
-	"github.com/pkg/errors"
+	gerrors "github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	sv1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -58,6 +60,11 @@ type FIO interface {
 type FIOrunner struct {
 	Cli      kubernetes.Interface
 	fioSteps fioSteps
+	Pods     []*v1.Pod
+	PVCs     []*v1.PersistentVolumeClaim
+	StorageClass *sv1.StorageClass
+	ConfigMap  *v1.ConfigMap
+	TestFileName   string
 }
 
 type RunFIOArgs struct {
@@ -68,6 +75,7 @@ type RunFIOArgs struct {
 	FIOJobFilepath string
 	FIOJobName     string
 	Image          string
+	NumPods        int
 }
 
 func (a *RunFIOArgs) Validate() error {
@@ -81,81 +89,87 @@ type RunFIOResult struct {
 	Size         string            `json:"size,omitempty"`
 	StorageClass *sv1.StorageClass `json:"storageClass,omitempty"`
 	FioConfig    string            `json:"fioConfig,omitempty"`
-	Result       FioResult         `json:"result,omitempty"`
+	// Maps Pod name to FioResult.
+	Result       map[string]FioResult         `json:"result,omitempty"`
 }
 
-func (f *FIOrunner) RunFio(ctx context.Context, args *RunFIOArgs) (*RunFIOResult, error) {
+func (f *FIOrunner) CreateResources(ctx context.Context, args *RunFIOArgs) error {
 	f.fioSteps = &fioStepper{
 		cli:          f.Cli,
 		podReady:     &podReadyChecker{cli: f.Cli},
 		kubeExecutor: &kubeExecutor{cli: f.Cli},
 	}
-	return f.RunFioHelper(ctx, args)
 
-}
-
-func (f *FIOrunner) RunFioHelper(ctx context.Context, args *RunFIOArgs) (*RunFIOResult, error) {
 	// create a configmap with test parameters
 	if f.Cli == nil { // for UT purposes
-		return nil, fmt.Errorf("cli uninitialized")
+		return fmt.Errorf("cli uninitialized")
 	}
 
 	if err := args.Validate(); err != nil {
-		return nil, err
+		return err
 	}
 
 	if err := f.fioSteps.validateNamespace(ctx, args.Namespace); err != nil {
-		return nil, errors.Wrapf(err, "Unable to find namespace (%s)", args.Namespace)
+		return gerrors.Wrapf(err, "Unable to find namespace (%s)", args.Namespace)
 	}
 
 	if err := f.fioSteps.validateNodeSelector(ctx, args.NodeSelector); err != nil {
-		return nil, errors.Wrapf(err, "Unable to find nodes satisfying node selector (%v)", args.NodeSelector)
-	}
-
-	sc, err := f.fioSteps.storageClassExists(ctx, args.StorageClass)
-	if err != nil {
-		return nil, errors.Wrap(err, "Cannot find StorageClass")
+		return gerrors.Wrapf(err, "Unable to find nodes satisfying node selector (%v)", args.NodeSelector)
 	}
 
 	configMap, err := f.fioSteps.loadConfigMap(ctx, args)
 	if err != nil {
-		return nil, errors.Wrap(err, "Unable to create a ConfigMap")
-	}
-	defer func() {
-		_ = f.fioSteps.deleteConfigMap(context.TODO(), configMap, args.Namespace)
-	}()
-
-	testFileName, err := fioTestFilename(configMap.Data)
-	if err != nil {
-		return nil, errors.Wrap(err, "Failed to get test file name.")
+		return gerrors.Wrap(err, "Unable to create a ConfigMap")
 	}
 
-	pvc, err := f.fioSteps.createPVC(ctx, args.StorageClass, args.Size, args.Namespace)
+	f.TestFileName, err = fioTestFilename(configMap.Data)
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to create PVC")
+		return gerrors.Wrap(err, "Failed to get test file name.")
 	}
-	defer func() {
-		_ = f.fioSteps.deletePVC(context.TODO(), pvc.Name, args.Namespace)
-	}()
-	fmt.Println("PVC created", pvc.Name)
 
-	pod, err := f.fioSteps.createPod(ctx, pvc.Name, configMap.Name, testFileName, args.Namespace, args.NodeSelector, args.Image)
-	if err != nil {
-		return nil, errors.Wrap(err, "Failed to create POD")
+	fmt.Printf("Creating %d PVCs and Pods\n", args.NumPods)
+	for i := 1; i <= args.NumPods; i++ {
+		pvc, err := f.fioSteps.createPVC(ctx, args.StorageClass, args.Size, args.Namespace)
+		if err != nil {
+		   return gerrors.Wrap(err, "Failed to create PVC")
+		}
+		f.PVCs = append(f.PVCs, pvc)
+		fmt.Println("PVC created", pvc.Name)
+
+	        pod, err := f.fioSteps.createPod(ctx, pvc.Name, configMap.Name, f.TestFileName, args.Namespace, args.NodeSelector, args.Image)
+	        if err != nil {
+		   return gerrors.Wrap(err, "Failed to create POD")
+		}
+		f.Pods = append(f.Pods, pod) 
+		fmt.Println("Pod created", pod.Name)
 	}
-	defer func() {
-		_ = f.fioSteps.deletePod(context.TODO(), pod.Name, args.Namespace)
-	}()
-	fmt.Println("Pod created", pod.Name)
-	fmt.Printf("Running FIO test (%s) on StorageClass (%s) with a PVC of Size (%s)\n", testFileName, args.StorageClass, args.Size)
-	fioOutput, err := f.fioSteps.runFIOCommand(ctx, pod.Name, ContainerName, testFileName, args.Namespace)
+	return err
+}
+
+func (f *FIOrunner) RunFio(ctx context.Context, args *RunFIOArgs) (*RunFIOResult, error) {
+	var err error
+	if f.StorageClass == nil {
+	   f.StorageClass, err = f.fioSteps.storageClassExists(ctx, args.StorageClass)
+	   if err != nil {
+		return nil, gerrors.Wrap(err, "Cannot find StorageClass")
+	   }
+	}
+	if f.ConfigMap == nil {
+	   f.ConfigMap, err = f.fioSteps.loadConfigMap(ctx, args)
+	   if err != nil {
+		return nil, gerrors.Wrap(err, "Unable to create a ConfigMap")
+	   }
+	}
+
+	fmt.Printf("Running FIO test (%s) on StorageClass (%s) with %d PVCs of Size (%s)\n", f.TestFileName, args.StorageClass, args.NumPods, args.Size)
+	fioOutput, err := f.fioSteps.runFIOCommand(ctx, f.Pods, ContainerName, f.TestFileName, args.Namespace)
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed while running FIO test.")
+		return nil, gerrors.Wrap(err, "Failed while running FIO test.")
 	}
 	return &RunFIOResult{
 		Size:         args.Size,
-		StorageClass: sc,
-		FioConfig:    configMap.Data[testFileName],
+		StorageClass: f.StorageClass,
+		FioConfig:    f.ConfigMap.Data[f.TestFileName],
 		Result:       fioOutput,
 	}, nil
 }
@@ -169,7 +183,7 @@ type fioSteps interface {
 	deletePVC(ctx context.Context, pvcName, namespace string) error
 	createPod(ctx context.Context, pvcName, configMapName, testFileName, namespace string, nodeSelector map[string]string, image string) (*v1.Pod, error)
 	deletePod(ctx context.Context, podName, namespace string) error
-	runFIOCommand(ctx context.Context, podName, containerName, testFileName, namespace string) (FioResult, error)
+	runFIOCommand(ctx context.Context, pods []*v1.Pod, containerName, testFileName, namespace string) (map[string]FioResult, error)
 	deleteConfigMap(ctx context.Context, configMap *v1.ConfigMap, namespace string) error
 }
 
@@ -213,7 +227,7 @@ func (s *fioStepper) loadConfigMap(ctx context.Context, args *RunFIOArgs) (*v1.C
 	case args.FIOJobFilepath != "":
 		data, err := os.ReadFile(args.FIOJobFilepath)
 		if err != nil {
-			return nil, errors.Wrap(err, "File reading error")
+			return nil, gerrors.Wrap(err, "File reading error")
 		}
 		configMap.Data[filepath.Base(args.FIOJobFilepath)] = string(data)
 	case args.FIOJobName != "":
@@ -233,7 +247,7 @@ func (s *fioStepper) loadConfigMap(ctx context.Context, args *RunFIOArgs) (*v1.C
 func (s *fioStepper) createPVC(ctx context.Context, storageclass, size, namespace string) (*v1.PersistentVolumeClaim, error) {
 	sizeResource, err := resource.ParseQuantity(size)
 	if err != nil {
-		return nil, errors.Wrapf(err, "Unable to parse PVC size (%s)", size)
+		return nil, gerrors.Wrapf(err, "Unable to parse PVC size (%s)", size)
 	}
 	pvc := &v1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
@@ -327,41 +341,50 @@ func (s *fioStepper) deletePod(ctx context.Context, podName, namespace string) e
 	return s.cli.CoreV1().Pods(namespace).Delete(ctx, podName, metav1.DeleteOptions{})
 }
 
-func (s *fioStepper) runFIOCommand(ctx context.Context, podName, containerName, testFileName, namespace string) (FioResult, error) {
+func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containerName, testFileName, namespace string) (map[string]FioResult, error) {
 	jobFilePath := fmt.Sprintf("%s/%s", ConfigMapMountPath, testFileName)
 	command := []string{"fio", "--directory", VolumeMountPath, jobFilePath, "--output-format=json"}
-	done := make(chan bool, 1)
-	var fioOut FioResult
-	var stdout string
-	var stderr string
+
+	fioResults := make(map[string]FioResult, len(pods))
+	lock := sync.RWMutex{}
+
 	var err error
 	timestart := time.Now()
-	go func() {
-		stdout, stderr, err = s.kubeExecutor.exec(namespace, podName, containerName, command)
+	var wg sync.WaitGroup
+	for i := 0; i < len(pods); i++ {
+	    wg.Add(1)
+	    i := i
+	    fmt.Printf("Running command in Pod %q\n", pods[i].Name)
+	    go func() {
+	        defer wg.Done()
+		stdout, stderr, err := s.kubeExecutor.exec(namespace, pods[i].Name, containerName, command)
+		var fioOut FioResult
+		err = json.Unmarshal([]byte(stdout), &fioOut)
+		if err != nil {
+		   err = gerrors.Wrapf(err, "Unable to parse fio output into json.")
+		}
+		lock.Lock()
+		fioResults[pods[i].Name] = fioOut
+		lock.Unlock()
 		if err != nil || stderr != "" {
 			if err == nil {
-				err = fmt.Errorf("stderr when running FIO")
+				err = errors.Join(err, fmt.Errorf("stderr when running FIO"))
 			}
-			err = errors.Wrapf(err, "Error running command:(%v), stderr:(%s)", command, stderr)
+			err = gerrors.Wrapf(err, "Error running command:(%v), stderr:(%s)", command, stderr)
 		}
-		done <- true
-	}()
+	    }()
+	}
 	spin := spinner.New(spinner.CharSets[9], 100*time.Millisecond)
 	spin.Start()
-	<-done
 	spin.Stop()
+	fmt.Println("Waiting for exec Pods to finish")
+	wg.Wait()
 	elapsed := time.Since(timestart)
 	fmt.Println("Elapsed time-", elapsed)
 	if err != nil {
-		return fioOut, err
+		return fioResults, err
 	}
-
-	err = json.Unmarshal([]byte(stdout), &fioOut)
-	if err != nil {
-		return fioOut, errors.Wrapf(err, "Unable to parse fio output into json.")
-	}
-
-	return fioOut, nil
+	return fioResults, nil
 }
 
 // deleteConfigMap only deletes a config map if it has the label

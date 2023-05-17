@@ -48,6 +48,7 @@ var (
 
 	storageClass   string
 	namespace      string
+	numPods        int
 	containerImage string
 
 	fioCheckerSize     string
@@ -60,9 +61,9 @@ var (
 		Long:  `Run an fio test`,
 		Args:  cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			return Fio(ctx, output, outfile, storageClass, fioCheckerSize, namespace, fioNodeSelector, fioCheckerTestName, fioCheckerFilePath, containerImage)
+			return Fio(ctx, output, outfile, storageClass, fioCheckerSize, namespace, fioNodeSelector, fioCheckerTestName, fioCheckerFilePath, containerImage, numPods)
 		},
 	}
 
@@ -108,6 +109,7 @@ func init() {
 	_ = fioCmd.MarkFlagRequired("storageclass")
 	fioCmd.Flags().StringVarP(&fioCheckerSize, "size", "z", fio.DefaultPVCSize, "The size of the volume used to run FIO. Note that the FIO job definition is not scaled accordingly.")
 	fioCmd.Flags().StringVarP(&namespace, "namespace", "n", fio.DefaultNS, "The namespace used to run FIO.")
+	fioCmd.Flags().IntVar(&numPods, "numpods", 1, "Number of test Pods (and test PVC) to create")
 	fioCmd.Flags().StringToStringVarP(&fioNodeSelector, "nodeselector", "N", map[string]string{}, "Node selector applied to pod.")
 	fioCmd.Flags().StringVarP(&fioCheckerFilePath, "fiofile", "f", "", "The path to a an fio config file.")
 	fioCmd.Flags().StringVarP(&fioCheckerTestName, "testname", "t", "", "The Name of a predefined kubestr fio test. Options(default-fio)")
@@ -194,7 +196,7 @@ func PrintAndJsonOutput(result []*kubestr.TestOutput, output string, outfile str
 }
 
 // Fio executes the FIO test.
-func Fio(ctx context.Context, output, outfile, storageclass, size, namespace string, nodeSelector map[string]string, jobName, fioFilePath string, containerImage string) error {
+func Fio(ctx context.Context, output, outfile, storageclass, size, namespace string, nodeSelector map[string]string, jobName, fioFilePath string, containerImage string, numPods int) error {
 	cli, err := kubestr.LoadKubeCli()
 	if err != nil {
 		fmt.Println(err.Error())
@@ -203,31 +205,47 @@ func Fio(ctx context.Context, output, outfile, storageclass, size, namespace str
 	fioRunner := &fio.FIOrunner{
 		Cli: cli,
 	}
-	testName := fmt.Sprintf("FIO test results at %s", time.Now().Format("2006-01-02 15:04:05"))
-//	fmt.Println("----------TARALOG FIO test that runs continously:")
+
+	fioArgs := fio.RunFIOArgs{
+	     StorageClass:   storageclass,
+	     Size:           size,
+	     Namespace:      namespace,
+	     NumPods:        numPods,
+	     NodeSelector:   nodeSelector,
+	     FIOJobName:     jobName,
+	     FIOJobFilepath: fioFilePath,
+	     Image:          containerImage,
+	}
+	if err := fioRunner.CreateResources(ctx, &fioArgs); err != nil {
+	   return err
+	}
+
+	fmt.Printf("Starting FIO test %q that runs continously.\n", jobName)
 	var result *kubestr.TestOutput
-//	for {
-	      fmt.Println("\n\n\n\nHERE")
-	      fioResult, err := fioRunner.RunFio(ctx, &fio.RunFIOArgs{
-			 StorageClass:   storageclass,
-			 Size:           size,
-			 Namespace:      namespace,
-			 NodeSelector:   nodeSelector,
-			 FIOJobName:     jobName,
-			 FIOJobFilepath: fioFilePath,
-			 Image:          containerImage,
-	      })
-	      if err != nil {
-		result = kubestr.MakeTestOutput(testName, kubestr.StatusError, err.Error(), fioResult)
-	      } else {
-	        result = kubestr.MakeTestOutput(testName, kubestr.StatusOK, fmt.Sprintf("\n%s", fioResult.Result.Print()), fioResult)
-	      }
-              var wrappedResult = []*kubestr.TestOutput{result}
-	      if !PrintAndJsonOutput(wrappedResult, output, outfile) {
-		result.Print()
-	      }
-//	}
+	for {
+		     testName := fmt.Sprintf("FIO test results at %s", time.Now().Format("2006-01-02 15:04:05"))
+		     fioResult, err := fioRunner.RunFio(ctx, &fioArgs)
+		     // Continue running despite errors, which are expected because we are rebooting nodes.
+	      	     if err != nil {
+		         result = kubestr.MakeTestOutput(testName, kubestr.StatusError, err.Error(), fioResult)
+//			 return err
+	      	     } else {
+	               	 result = kubestr.MakeTestOutput(testName, kubestr.StatusOK, fioResultMapToString(fioResult.Result), fioResult)
+	      	     }
+              	     var wrappedResult = []*kubestr.TestOutput{result}
+	      	     if !PrintAndJsonOutput(wrappedResult, output, outfile) {
+		         result.Print()
+	      	     }
+	}
 	return err
+}
+
+func fioResultMapToString(m map[string]fio.FioResult) string {
+     str := ""
+     for k, v := range m {
+     	 str = fmt.Sprintf("%s\n\nResults for Pod %q:\n%s\n\n", str, k, v.Print())
+     }
+     return str
 }
 
 func CSICheck(ctx context.Context, output, outfile,
