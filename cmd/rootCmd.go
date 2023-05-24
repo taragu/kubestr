@@ -223,7 +223,7 @@ func Fio(ctx context.Context, output, outfile, storageclass, size, namespace str
 	fmt.Printf("Starting FIO test %q that runs continously.\n", jobName)
 	var result *kubestr.TestOutput
 	for {
-		     testName := fmt.Sprintf("FIO test results at %s", time.Now().Format("2006-01-02 15:04:05"))
+		     testName := fmt.Sprintf("FIO test results")
 		     fioResult, err := fioRunner.RunFio(ctx, &fioArgs)
 		     // Continue running despite errors, which are expected because we are rebooting nodes.
 	      	     if err != nil {

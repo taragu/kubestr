@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/briandowns/spinner"
 	kankube "github.com/kanisterio/kanister/pkg/kube"
 	"github.com/kastenhq/kubestr/pkg/common"
 	gerrors "github.com/pkg/errors"
@@ -349,22 +348,28 @@ func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containe
 	lock := sync.RWMutex{}
 
 	var err error
+	var execErrCount int
 	timestart := time.Now()
 	var wg sync.WaitGroup
 	for i := 0; i < len(pods); i++ {
 	    wg.Add(1)
 	    i := i
-	    fmt.Printf("Running command in Pod %q\n", pods[i].Name)
 	    go func() {
 	        defer wg.Done()
 		stdout, stderr, err := s.kubeExecutor.exec(namespace, pods[i].Name, containerName, command)
+		thisErrCount := 0
+		if err != nil {
+		   thisErrCount++
+		}
 		var fioOut FioResult
 		err = json.Unmarshal([]byte(stdout), &fioOut)
 		if err != nil {
 		   err = gerrors.Wrapf(err, "Unable to parse fio output into json.")
+		   thisErrCount++
 		}
 		lock.Lock()
 		fioResults[pods[i].Name] = fioOut
+		execErrCount += thisErrCount
 		lock.Unlock()
 		if err != nil || stderr != "" {
 			if err == nil {
@@ -374,13 +379,12 @@ func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containe
 		}
 	    }()
 	}
-	spin := spinner.New(spinner.CharSets[9], 100*time.Millisecond)
-	spin.Start()
-	spin.Stop()
 	fmt.Println("Waiting for exec Pods to finish")
 	wg.Wait()
 	elapsed := time.Since(timestart)
+	fmt.Println("-----------------------------------------------------\n\n\n")
 	fmt.Println("Elapsed time-", elapsed)
+	fmt.Printf("Start time: %s; num errors of random RW in Pods: %d\n", timestart.Format("2006-01-02 15:04:05"), execErrCount)
 	if err != nil {
 		return fioResults, err
 	}
