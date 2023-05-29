@@ -287,6 +287,11 @@ func (s *fioStepper) createPod(ctx context.Context, pvcName, configMapName, test
 			Namespace:    namespace,
 		},
 		Spec: v1.PodSpec{
+		        TopologySpreadConstraints: []v1.TopologySpreadConstraint{{
+			    MaxSkew: int32(1),
+			    WhenUnsatisfiable: v1.DoNotSchedule,
+			    TopologyKey: "kubernetes.io/hostname",
+			}},
 			Containers: []v1.Container{{
 				Name:    ContainerName,
 				Command: []string{"/bin/sh"},
@@ -381,10 +386,8 @@ func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containe
 	}
 	fmt.Println("Waiting for exec Pods to finish")
 	wg.Wait()
-	elapsed := time.Since(timestart)
-	fmt.Println("-----------------------------------------------------\n\n\n")
-	fmt.Println("Elapsed time-", elapsed)
-	fmt.Printf("Start time: %s; num errors of random RW in Pods: %d\n", timestart.Format("2006-01-02 15:04:05"), execErrCount)
+	fmt.Println("-----------------------------------------------------\n\n")
+        fmt.Printf("Start time: %s; elapsed time: %s num errors of random RW in Pods: %d\n", timestart.Format("2006-01-02 15:04:05"), time.Since(timestart), execErrCount)
 	if err != nil {
 		return fioResults, err
 	}
