@@ -354,6 +354,7 @@ func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containe
 
 	var err error
 	var execErrCount int
+	var parseErrCount int
 	timestart := time.Now()
 	var wg sync.WaitGroup
 	for i := 0; i < len(pods); i++ {
@@ -362,19 +363,21 @@ func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containe
 	    go func() {
 	        defer wg.Done()
 		stdout, stderr, err := s.kubeExecutor.exec(namespace, pods[i].Name, containerName, command)
-		thisErrCount := 0
+		thisExecErrCount := 0
+		thisPasteErrCount := 0
 		if err != nil {
-		   thisErrCount++
+		   thisExecErrCount++
 		}
 		var fioOut FioResult
 		err = json.Unmarshal([]byte(stdout), &fioOut)
 		if err != nil {
 		   err = gerrors.Wrapf(err, "Unable to parse fio output into json.")
-		   thisErrCount++
+		   thisPasteErrCount++
 		}
 		lock.Lock()
 		fioResults[pods[i].Name] = fioOut
-		execErrCount += thisErrCount
+		execErrCount += thisExecErrCount
+		parseErrCount += thisPasteErrCount
 		lock.Unlock()
 		if err != nil || stderr != "" {
 			if err == nil {
@@ -387,7 +390,7 @@ func (s *fioStepper) runFIOCommand(ctx context.Context, pods []*v1.Pod, containe
 	fmt.Println("Waiting for exec Pods to finish")
 	wg.Wait()
 	fmt.Println("-----------------------------------------------------\n\n")
-        fmt.Printf("Start time: %s; elapsed time: %s num errors of random RW in Pods: %d\n", timestart.Format("2006-01-02 15:04:05"), time.Since(timestart), execErrCount)
+        fmt.Printf("Start time: %s, elapsed time: %s, num err kubectl exec: %d, num err parse: %d\n", timestart.Format("2006-01-02 15:04:05"), time.Since(timestart), execErrCount, parseErrCount)
 	if err != nil {
 		return fioResults, err
 	}

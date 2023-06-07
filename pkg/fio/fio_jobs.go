@@ -4,6 +4,7 @@ var fioJobs = map[string]string{
 	DefaultFIOJob: testJob1,
 	"randrw":      randReadWrite,
 	"robin-availability": robinAvailability,
+	"robin-availability-readonly": robinAvailabilityReadOnly,
 }
 
 var testJob1 = `[global]
@@ -82,6 +83,24 @@ iodepth=64
 size=4G
 readwrite=randrw
 rwmixread=75
+time_based
+ramp_time=2s
+runtime=20s
+`
+
+// Run for 20 seconds.
+var robinAvailabilityReadOnly = `[global]
+randrepeat=0
+verify=0
+ioengine=libaio
+direct=1
+gtod_reduce=1
+[job1]
+name=rand_read
+bs=4K
+iodepth=64
+size=4G
+readwrite=randread
 time_based
 ramp_time=2s
 runtime=20s
