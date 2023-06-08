@@ -77,6 +77,7 @@ ioengine=libaio
 direct=1
 gtod_reduce=1
 [job1]
+filename=/dev/block
 name=rand_readwrite
 bs=4K
 iodepth=64
@@ -96,6 +97,7 @@ ioengine=libaio
 direct=1
 gtod_reduce=1
 [job1]
+filename=/dev/block
 name=rand_read
 bs=4K
 iodepth=64
