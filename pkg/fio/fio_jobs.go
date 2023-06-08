@@ -69,7 +69,7 @@ ramp_time=2s
 runtime=15s
 `
 
-// Run for 20 seconds.
+// Run for 60 seconds.
 var robinAvailability = `[global]
 randrepeat=0
 verify=0
@@ -86,10 +86,10 @@ readwrite=randrw
 rwmixread=75
 time_based
 ramp_time=2s
-runtime=20s
+runtime=60s
 `
 
-// Run for 20 seconds.
+// Run for 60 seconds.
 var robinAvailabilityReadOnly = `[global]
 randrepeat=0
 verify=0
@@ -105,5 +105,5 @@ size=4G
 readwrite=randread
 time_based
 ramp_time=2s
-runtime=20s
+runtime=60s
 `
